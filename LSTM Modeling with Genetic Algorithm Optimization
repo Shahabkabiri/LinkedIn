@@ -734,3 +734,99 @@ model = ga(function=FitnessFunctionForGA,    # The fitness function to optimize.
 
 # Run the genetic algorithm to find the optimal hyperparameters.
 model.run()
+
+
+
+
+
+RNN Model  ---------------------------------------------------------------------
+
+
+
+# Import necessary libraries
+import pickle
+import sys
+import os
+import tensorflow as tf
+from keras.models import Model
+from keras.layers import Input, SimpleRNN, Dense, Reshape
+
+# Define file paths based on the operating system
+if sys.platform.startswith('win'):
+    # Windows file paths
+    DataFilePattAndName = 
+    LogFilePathAndName =
+    LogFolderPath =
+else:
+    # Linux/Unix file paths
+    DataFilePattAndName = 
+    LogFilePathAndName =
+    LogFolderPath = 
+# Function to get a counter value for file naming
+def get_counter(LogFolderPath):
+    counter_file = os.path.join(LogFolderPath, 'counter.txt')
+
+    if os.path.exists(counter_file):
+        # If counter file exists, read its value and increment by 1
+        with open(counter_file, 'r') as f:
+            counter = int(f.read().strip())
+            counter += 1
+    else:
+        # If counter file doesn't exist, start counter from 1
+        counter = 1
+
+    # Write the updated counter value to the file
+    with open(counter_file, 'w') as f:
+        f.write(str(counter))
+
+    counter_str = str(counter) + '-'
+    return counter_str
+
+# Get a counter value for file naming
+Counter = get_counter(LogFolderPath)
+OneLinerName = Counter
+
+# Load data from a pickle file
+with open(DataFilePattAndName, 'rb') as f:
+    data = pickle.load(f)
+
+X_train, Y_train, X_test, Y_test = data
+
+# Define the input shape for the autoencoder
+input_shape = (80, 3)  # (timesteps, input_dim)
+
+# Define the encoder input layer
+encoder_input = Input(shape=input_shape)
+
+# Define the encoder RNN layer
+encoder_rnn = SimpleRNN(units=32)(encoder_input)
+encoder_output = Dense(16)(encoder_rnn)
+
+# Define the decoder input layer
+decoder_input = Input(shape=(16,))
+
+# Add a time dimension to the decoder input
+decoder_input_reshaped = Reshape((1, 16))(decoder_input)
+
+# Define the decoder RNN layer
+decoder_rnn = SimpleRNN(units=32, return_sequences=True)(decoder_input_reshaped)
+decoder_output = Dense(2)(decoder_rnn)
+
+# Connect the encoder and decoder to create the autoencoder
+encoder = Model(encoder_input, encoder_output)
+decoder = Model(decoder_input, decoder_output)
+autoencoder = Model(encoder_input, decoder(encoder_output))
+
+# Compile the autoencoder model
+autoencoder.compile(optimizer='adam', loss='mse')
+
+# Train the autoencoder model on the data
+history = autoencoder.fit(X_train, Y_train, epochs=2, verbose=1, batch_size=32, validation_data=(X_test, Y_test))
+
+# Save the training history to a pickle file
+with open(LogFolderPath + "/" + OneLinerName + ".hisrory", 'wb') as dumper:
+    pickle.dump(history, dumper)
+
+# Evaluate the autoencoder model on the test data
+loss = autoencoder.evaluate(X_test, Y_test)
+print("Test Loss:", loss)
