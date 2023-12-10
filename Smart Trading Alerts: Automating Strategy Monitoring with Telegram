@@ -1,0 +1,229 @@
+# Forex Program
+# This script performs various tasks related to Forex trading and provides status updates via Telegram.
+
+import pickle
+import subprocess
+from datetime import datetime
+import pandas as pd
+import winshell
+import os
+import time
+import tailer
+import glob
+import io
+from collections import Counter
+import requests
+
+# Define desktop path
+DesktopPath = winshell.desktop()
+
+# Define the current folder and other file paths
+CurrentFolder = 'C:\\Users\\Administrator\\Dropbox\'
+NinjaExportFolderPath = DesktopPath + '\\RawExportedNinjaFiles'
+BaseDataFilePath = CurrentFolder + '\\BaseDataDict.txt'
+BaseDataDict = pd.read_csv(BaseDataFilePath, header=None, index_col=0, squeeze=True).to_dict()
+PublishedLevelsFilePath = CurrentFolder + '\\PublishedLevelsFilePath.pk'
+
+# Define a function to calculate the duration between two datetime objects
+def getDuration(then, now=datetime.now(), interval="default"):
+    # Returns a duration as specified by the variable interval
+
+    duration = now - then
+    duration_in_s = duration.total_seconds()
+
+    # Define helper functions for different time units
+    def years():
+        return divmod(duration_in_s, 31536000)  # Seconds in a year = 31536000.
+
+    def days(seconds=None):
+        return divmod(seconds if seconds is not None else duration_in_s, 86400)  # Seconds in a day = 86400
+
+    def hours(seconds=None):
+        return divmod(seconds if seconds is not None else duration_in_s, 3600)  # Seconds in an hour = 3600
+
+    def minutes(seconds=None):
+        return divmod(seconds if seconds is not None else duration_in_s, 60)  # Seconds in a minute = 60
+
+    def seconds(seconds=None):
+        if seconds is not None:
+            return divmod(seconds, 1)
+        return duration_in_s
+
+    def totalDuration():
+        y = years()
+        d = days(y[1])
+        h = hours(d[1])
+        m = minutes(h[1])
+        s = seconds(m[1])
+
+        return "Time between dates: {} years, {} days, {} hours, {} minutes, and {} seconds".format(
+            int(y[0]), int(d[0]), int(h[0]), int(m[0]), int(s[0]))
+
+    return {
+        'years': int(years()[0]),
+        'days': int(days()[0]),
+        'hours': int(hours()[0]),
+        'minutes': int(minutes()[0]),
+        'seconds': int(seconds()),
+        'default': totalDuration()
+    }[interval]
+
+# Define a function to get the timestamp of the latest change in a file
+def latest_change(filename):
+    return max(os.path.getmtime(filename), os.path.getctime(filename))
+
+# Define a function to parse datetime from a given format
+def myparser(x):
+    return datetime.strptime(str(x)[:22], '%Y%m%d %H%M%S %f')
+
+# Define a function to get the last line from the latest modified file in a folder
+def LastUpdatedTickDataInFolder():
+    ListOfFiles = glob.glob(NinjaExportFolderPath + '\\*.txt')
+    LatestModifiedFilePathAndName = max(ListOfFiles, key=latest_change)
+    with open(LatestModifiedFilePathAndName) as file:
+        last_line = tailer.tail(file, 1)
+    return last_line
+
+# Define a function to generate a download status report
+def DownloadStatusReport():
+    DownLoadProgressStatusData = pd.DataFrame()
+    InstrumentListFileNames = os.listdir(NinjaExportFolderPath)
+    if len(InstrumentListFileNames) == 0:
+        Report = "Ninja Export Folder seems to be empty ... Check your running programs... " + '\n\n'
+    else:
+        Report = "Last Update on Instruments Tick Data Download: " + '\n\n'
+        for i in range(len(InstrumentListFileNames)):
+            DownLoadProgressStatusData.loc[i, 'InstrumentAndContract'] = InstrumentListFileNames[i].split('.')[0]
+            try:
+                LastTickData = pd.read_csv(NinjaExportFolderPath+"\\"+InstrumentListFileNames[i],
+                                           sep=";",
+                                           header=None,
+                                           names=['Time', 'Last Price', 'Bid Price', 'Ask Price', 'Last Volume'],
+                                           parse_dates=['Time'],
+                                           date_parser=myparser).tail(1).reset_index(drop=True)
+            except:
+                Report = Report + "Seems there was a parsing Error in " + str(DownLoadProgressStatusData.loc[i, 'InstrumentAndContract']) + " Contract"
+            else:
+                DownLoadProgressStatusData.loc[i, 'LastUpdatedTime'] = LastTickData.loc[0, 'Time']
+                DownLoadProgressStatusData.loc[i, 'LastUpdatedTimeFromUTCNow'] = int(getDuration(then=LastTickData.loc[0, 'Time'], now=datetime.utcnow(), interval='minutes'))
+                Report = Report + (DownLoadProgressStatusData.loc[i, 'InstrumentAndContract']) + " :  " +  str(int(DownLoadProgressStatusData.loc[i, 'LastUpdatedTimeFromUTCNow'])) + " Minutes ago" + "\n"
+    return Report
+
+# Define a function to read all detected levels from a file
+def ReadAllDetectedLevels():
+    AllDetectedLevelsFilePath = BaseDataDict['AllDetectedLevelsFilePath']
+    try:
+        AllDetectedLevelsToday = pd.read_csv(AllDetectedLevelsFilePath)
+    except pd.errors.EmptyDataError:
+        print("There are no new levels today...")
+        AllDetectedLevelsToday = pd.DataFrame()
+    return AllDetectedLevelsToday
+
+# Define a function to generate a report for new detected levels
+def NewDetectedLevelsReport(AllDetectedLevelsToday, PublishedLevels):
+    if PublishedLevels.shape[0] > 0 and AllDetectedLevelsToday.shape[0] > 0:
+        PublishedLevelsUniqueIDs = PublishedLevels['LevelUniqueID'].tolist()
+        PublishingLevels = AllDetectedLevelsToday[~AllDetectedLevelsToday.LevelUniqueID.isin(PublishedLevelsUniqueIDs)]
+    else:
+        PublishingLevels = AllDetectedLevelsToday
+    if PublishingLevels.shape[0] == 0:
+        Report_Part2 = "No New Levels have been Detected"
+    else:
+        Report_Part2 = "New Detected Levels:" + '\n'
+        PublishingList = PublishingLevels['symbol'].to_list()
+        PublishingSymbols = Counter(PublishingList).keys()
+        PublishingOccurances = Counter(PublishingList).values()
+        PublishingSymbols = dict(zip(PublishingSymbols, PublishingOccurances))
+        print(PublishingSymbols)
+        for i in PublishingSymbols:
+            Report_Part2 = Report_Part2 + str(i) + " : " + str(PublishingSymbols[i]) + " New Level(s)" + '\n'
+    AllPublishedLevels = pd.concat([PublishedLevels, PublishingLevels], ignore_index=True)
+    return AllPublishedLevels, Report_Part2, PublishingLevels.shape[0]
+
+# Define a function to send a message via Telegram
+def SendTelegramMessage(TOKEN, ChatID, Message):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage?chat_id={ChatID}&text={Message}"
+    SentMessageResult = requests.get(url).json()
+    if SentMessageResult['ok']:
+        SentMessageID = int(SentMessageResult['result']['message_id'])
+    else:
+        print("Telegram Message was not sent.... UTC Time: ", str(datetime.utcnow()))
+        SentMessageID = 0
+    return SentMessageID
+
+# Define a function to delete a message from Telegram
+def DeleteTelegramMessage(TOKEN, ChatID, MessageID):
+    url = f"https://api.telegram.org/bot{TOKEN}/deleteMessage?chat_id={ChatID}&message_id={MessageID}"
+    MessageDeletionResult = requests.get(url).json()
+    if not MessageDeletionResult['ok']:
+        print("Unable to delete Telegram Message .... UTC Time: ", str(datetime.utcnow()))
+
+# Define Telegram API tokens and chat IDs
+
+# Get the timestamp of the last updated tick data
+LastUpdatedTickData = LastUpdatedTickDataInFolder()
+FailureCounter = 0
+FirstMessage = True
+LastSentMessageID = 0
+MessageIDToDelete = 0
+
+# Main loop to send status updates via Telegram
+while True:
+    if FirstMessage:
+        TelegramMessage = "Starting Message Sending Procedure ... " + "\n" + str(datetime.utcnow()) + "\n\n"
+        TelegramMessage += "Latest Status:" + "\n\n"
+    else:
+        TelegramMessage = "Latest Status:" + "\n\n"
+
+    # Check AutoDownload Status...
+    CurrentLastTickData = LastUpdatedTickDataInFolder()
+    if LastUpdatedTickData != CurrentLastTickData:
+        FailureCounter = 0
+        Report_AutoDownloadProcessStatus = "AutoDownload is running ... "
+    else:
+        FailureCounter += 1
+        Report_AutoDownloadProcessStatus = "AutoDownload FAILURE... " + str(FailureCounter) + " consecutive times ..." + '\n'
+    TelegramMessage += Report_AutoDownloadProcessStatus + "\n"
+
+    # Calculate Download status Report Data
+    Report_DownloadStatus = DownloadStatusReport()
+    TelegramMessage += Report_DownloadStatus + "\n"
+
+    # New Levels Report
+    AllDetectedLevelsToday = ReadAllDetectedLevels()
+    if os.path.exists(PublishedLevelsFilePath):
+        with open(PublishedLevelsFilePath, 'rb') as reader:
+            PublishedLevels = pickle.load(reader)
+    else:
+        PublishedLevels = pd.DataFrame()
+    AllPublishedLevels, Report_NewDetectedLevels, PublishingLevelsCount = NewDetectedLevelsReport(
+        AllDetectedLevelsToday=AllDetectedLevelsToday,
+        PublishedLevels=PublishedLevels)
+    with open(PublishedLevelsFilePath, 'wb') as dumper:
+        pickle.dump(AllPublishedLevels, dumper)
+
+    TelegramMessage += Report_NewDetectedLevels + "\n"
+
+    if FirstMessage:
+        FirstMessageID = SendTelegramMessage(TOKEN=ShahabTOKEN, ChatID=Shahab_chat_id, Message=TelegramMessage)
+        FirstMessageIDB = SendTelegramMessage(TOKEN=BenamTOKEN, ChatID=Benam_chat_id, Message=TelegramMessage)
+        FirstMessage = False
+    else:
+        if LastSentMessageID == 0:
+            LastSentMessageID = SendTelegramMessage(TOKEN=ShahabTOKEN, ChatID=Shahab_chat_id, Message=TelegramMessage)
+            LastSentMessageIDB = SendTelegramMessage(TOKEN=BenamTOKEN, ChatID=Benam_chat_id, Message=TelegramMessage)
+        else:
+            print(PublishingLevelsCount, type(PublishingLevelsCount))
+            if PublishingLevelsCount == 0:
+                DeleteTelegramMessage(TOKEN=ShahabTOKEN, ChatID=Shahab_chat_id, MessageID=MessageIDToDelete)
+                DeleteTelegramMessage(TOKEN=BenamTOKEN, ChatID=Benam_chat_id, MessageID=LastSentMessageIDB)
+                time.sleep(1)
+                LastSentMessageID = SendTelegramMessage(TOKEN=ShahabTOKEN, ChatID=Shahab_chat_id, Message=TelegramMessage)
+                LastSentMessageIDB = SendTelegramMessage(TOKEN=BenamTOKEN, ChatID=Benam_chat_id, Message=TelegramMessage)
+                MessageIDToDelete = LastSentMessageID
+                MessageIDToDeleteB = LastSentMessageIDB
+            else:
+                LastSentMessageID = SendTelegramMessage(TOKEN=ShahabTOKEN, ChatID=Shahab_chat_id, Message=TelegramMessage)
+                LastSentMessageIDB = SendTelegramMessage(TOKEN=BenamTOKEN, ChatID=Benam_chat_id, Message=TelegramMessage)
+
+    time.sleep(3)
