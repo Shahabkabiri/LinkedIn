@@ -1,0 +1,106 @@
+#This code performs data preprocessing, categorizes price movements, and uses Affinity Propagation for clustering. You can further enhance this code and add more comments as needed for specific functionalities.
+# Import necessary libraries
+from sklearn import metrics, preprocessing
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.neural_network import MLPClassifier
+from sklearn.preprocessing import StandardScaler
+import MetaTrader5 as mt5
+import pandas as pd
+import math
+
+# Initialize MetaTrader
+if not mt5.initialize():
+    print("initialize() failed, error code =", mt5.last_error())
+    quit()
+
+# Define symbol and data parameters
+symbol = 'XAUUSD_i'
+Parameters = [
+    [
+        [symbol, 'close', 0],
+        [symbol, 'close', 1],
+        [symbol, 'close', 2],
+        [symbol, 'close', 3],
+        [symbol, 'close', 4],
+        [symbol, 'close', 5],
+        [symbol, 'close', 6],
+        [symbol, 'close', 7],
+    ],
+    [
+        [symbol, 'close', 0],
+        [symbol, 'close', 1],
+        [symbol, 'close', 2],
+        [symbol, 'close', 3],
+        [symbol, 'close', 4],
+        [symbol, 'close', 5],
+    ],
+]
+datacount = 3000
+DataforNN = pd.DataFrame()
+MoveUp = 0
+MoveDown = 0
+NeutralMove = 0
+
+# Loop through data and preprocess it
+for i in range(datacount):
+    TempData1 = []
+    rate = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_H1, i, len(Parameters[0]))
+    rate = pd.DataFrame(rate)
+    rate = rate.iloc[::-1]
+    rate.reset_index(drop=True, inplace=True)
+    
+    # Extract data based on Parameters
+    for j in range(len(Parameters[0])):
+        Data = rate.loc[Parameters[0][j][2], Parameters[0][j][1]]
+        TempData1.append(Data)
+    
+    TempData2 = pd.DataFrame(TempData1).transpose()
+    portionvalue = TempData2.iloc[0, 1]
+    
+    # Min-Max scaling
+    Min = float(TempData2.min(axis=1))
+    Max = float(TempData2.max(axis=1))
+    for j in range(len(Parameters[0]) - 1):
+        TempData2.iloc[0, j + 1] = (TempData2.iloc[0, j + 1] - Min) / (Max - Min)
+    
+    # Determine price change and categorize movements
+    PricechangeInpipsHigh = (rate.loc[0, 'close'] - rate.loc[1, 'close']) * 100
+    PricechangeInpipsLow = (rate.loc[0, 'close'] - rate.loc[1, 'close']) * 100
+    MaxPriceChange = max(PricechangeInpipsLow, PricechangeInpipsHigh, key=abs)
+    
+    if (-300 < MaxPriceChange < 300):
+        TempData2.iloc[0, 0] = 'Neutral'
+        NeutralMove += 1
+    if (MaxPriceChange >= 300):
+        TempData2.iloc[0, 0] = 'grow'
+        MoveUp += 1
+    if (MaxPriceChange <= -300):
+        TempData2.iloc[0, 0] = 'drop'
+        MoveDown += 1
+    
+    if DataforNN.empty:
+        DataforNN = TempData2
+    else:
+        DataforNN = pd.concat([DataforNN, TempData2], axis=0, ignore_index=True)
+
+# Split data for training and testing
+X = DataforNN.iloc[:, 1:]
+Y = DataforNN.iloc[:, 0]
+X_Train, X_Test, Y_Train, Y_Test = train_test_split(X, Y, test_size=.1, random_state=1)
+
+# Import necessary libraries for clustering
+from sklearn.cluster import KMeans, AffinityPropagation
+model = AffinityPropagation(n_clusters=3, verbose=True)
+model.fit(X_Train, y=Y_Train)
+
+# Obtain cluster labels
+labels = model.labels_
+result = pd.DataFrame(Y_Train)
+result.reset_index(drop=True, inplace=True)
+result2 = pd.DataFrame(labels)
+result2.reset_index(drop=True, inplace=True)
+result3 = pd.concat([result, result2], axis=1, ignore_index=True)
+
+# Save results to an Excel file
+result3.to_excel('XAUUSDClustering.xlsx')
