@@ -1,0 +1,256 @@
+# Description:
+# This code is a Python script designed for automated trading using the MetaTrader 5 platform.
+# It monitors the equity of a trading account and executes buy/sell orders for the EUR/USD currency pair
+# based on specific conditions. The script also manages stop-loss levels and adjusts them as needed.
+
+import time
+import pandas as pd
+import MetaTrader5 as mt5
+from datetime import datetime
+
+# Initialize the MetaTrader 5 platform
+if not mt5.initialize():
+    print("initialize() failed, error code =", mt5.last_error())
+    quit()
+
+# Create a DataFrame to store symbol-specific trading parameters
+SymbolData = pd.DataFrame(index=['XAUUSD', 'EURUSD', 'NASDAQ'], columns=[
+    'MinPointForCommission',
+    'MinPointToRiskFreeComiision',
+    'slMovementInPoints',
+    'NumberOfStepsBehindPrice'
+])
+
+# Define trading parameters for the EUR/USD currency pair
+SymbolData.loc['EURUSD', 'MinPointForCommission'] = 4 / 100000
+SymbolData.loc['EURUSD', 'MinPointToRiskFreeComiision'] = 25 / 100000
+SymbolData.loc['EURUSD', 'slMovementInPoints'] = 5 / 100000
+SymbolData.loc['EURUSD', 'NumberOfStepsBehindPrice'] = 1
+
+# Set maximum number of open positions and maximum number of equal buy/sell positions
+MaxNumberOfPositions = 7
+MaxNumberOfEqualBuySellPositions = 7
+
+# Get the initial equity of the trading account
+BaseEquity = mt5.account_info().equity
+print('Base Equity: ', BaseEquity)
+
+# Set maximum allowable loss in dollars and the base equity increase amount
+MaxLossInDollars = 5
+BaseEquityIncrease = 1
+
+# Initialize a flag to control the script's execution
+Finish = False
+
+# Main trading loop
+while mt5.account_info().equity > (BaseEquity - MaxLossInDollars):
+    if Finish == True:
+        quit()
+    
+    if mt5.account_info().equity > (BaseEquity + BaseEquityIncrease):
+        BaseEquity += BaseEquityIncrease
+        print('Base Equity: ', BaseEquity, ' - Closing open positions')
+        positions = mt5.positions_get()
+        
+        # Close all open positions
+        for i in range(len(mt5.positions_get())):
+            mt5.Close(symbol=symbol, ticket=positions[i].ticket)
+    
+    # Buy or Sell if the specified conditions are met
+    if (len(mt5.positions_get()) < MaxNumberOfPositions) and (mt5.account_info().equity > (BaseEquity - MaxLossInDollars)):
+        symbol = 'EURUSD'
+        lot = 0.01
+        
+        # Define buy and sell order requests
+        BUYrequest = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": lot,
+            "type": mt5.ORDER_TYPE_BUY,
+            "price": mt5.symbol_info_tick(symbol).bid,
+            "sl": mt5.symbol_info_tick(symbol).bid - 0.0003,
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_FOK,
+        }
+        SELLrequest = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": lot,
+            "type": mt5.ORDER_TYPE_SELL,
+            "price": mt5.symbol_info_tick(symbol).ask,
+            "sl": mt5.symbol_info_tick(symbol).ask + 0.0003,
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_FOK,
+        }
+        
+        # Send a trading request if the price is aggressively moving
+        SetPosition = False
+        while SetPosition != True:
+            a = mt5.copy_ticks_from(symbol, datetime.date.today(), 5)
+        
+        OpenPositions = pd.DataFrame(mt5.positions_get())
+        
+        if OpenPositions.empty:
+            resultSELL = mt5.order_send(SELLrequest)
+            time.sleep(1)
+            resultBUY = mt5.order_send(BUYrequest)
+            time.sleep(1)
+        
+        if len(OpenPositions) < MaxNumberOfEqualBuySellPositions:
+            if (mt5.symbol_info_tick(symbol).ask) > float(
+                    pd.DataFrame(mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 1)).loc[0, 'open']):
+                resultBUY = mt5.order_send(BUYrequest)
+                time.sleep(5)
+            else:
+                resultSELL = mt5.order_send(SELLrequest)
+                time.sleep(5)
+    
+    # Stop trailing of open positions
+    positions = mt5.positions_get()
+    if len(positions) > 0:
+        for i in range(len(positions)):
+            position = positions[i]
+            if position.type == 1:
+                Base_sl_ToRiskFreeCommission = float(position.price_open - SymbolData.loc[position.symbol, 'MinPointForCommission'])
+                Base_sl = position.sl
+                
+                if Base_sl > position.price_open:
+                    if (mt5.symbol_info_tick(position.symbol).ask < position.price_open - SymbolData.loc[position.symbol, 'MinPointToRiskFreeComiision']):
+                        request = {
+                            "action": mt5.TRADE_ACTION_SLTP,
+                            "position": position.ticket,
+                            "symbol": position.symbol,
+                            "sl": Base_sl_ToRiskFreeCommission,
+                        }
+                        result_SL = mt5.order_send(request)
+                        Base_sl = Base_sl_ToRiskFreeCommission
+                
+                if Base_sl < position.price_open:
+                    if ((Base_sl - mt5.symbol_info_tick(position.symbol).ask) // SymbolData.loc[position.symbol, 'slMovementInPoints']) > 0:
+                        ForwardSteps = int(((Base_sl - mt5.symbol_info_tick(position.symbol).ask) // SymbolData.loc[position.symbol, 'slMovementInPoints']))
+                        CurrentSLSteps = int((position.price_open - Base_sl) // SymbolData.loc[position.symbol, 'slMovementInPoints'])
+                        ModificationSlStep = max(ForwardSteps - SymbolData.loc[position.symbol, 'NumberOfStepsBehindPrice'], CurrentSLSteps)
+                        if ModificationSlStep != CurrentSLSteps:
+                            Modified_sl = float(Base_sl_ToRiskFreeCommission - ModificationSlStep * SymbolData.loc[position.symbol, 'slMovementInPoints'])
+                            request = {
+                                "action": mt5.TRADE_ACTION_SLTP,
+                                "position": position.ticket,
+                                "symbol": position.symbol,
+                                "sl": Modified_sl,
+                            }
+                            result_SL = mt5.order_send(request)
+            
+            if position.type == 0:
+                Base_sl = position.sl
+                Base_sl_ToRiskFreeCommission = float(position.price_open + SymbolData.loc[position.symbol, 'MinPointForCommission'])
+                
+                if Base_sl < position.price_open:
+                    if (mt5.symbol_info_tick(position.symbol).ask > position.price_open + SymbolData.loc[position.symbol, 'MinPointToRiskFreeComiision']):
+                        request = {
+                            "action": mt5.TRADE_ACTION_SLTP,
+                            "position": position.ticket,
+                            "symbol": position.symbol,
+                            "sl": Base_sl_ToRiskFreeCommission,
+                        }
+                        result_SL = mt5.order_send(request)
+                        Base_sl = Base_sl_ToRiskFreeCommission
+                
+                if Base_sl > position.price_open:
+                    if ((mt5.symbol_info_tick(position.symbol).ask - Base_sl) // SymbolData.loc[position.symbol, 'slMovementInPoints']) > 0:
+                        ForwardSteps = int(((mt5.symbol_info_tick(position.symbol).ask - Base_sl) // SymbolData.loc[position.symbol, 'slMovementInPoints']))
+                        CurrentSLSteps = int((Base_sl - position.price_open) // SymbolData.loc[position.symbol, 'slMovementInPoints'])
+                        ModificationSlStep = max(ForwardSteps - SymbolData.loc[position.symbol, 'NumberOfStepsBehindPrice'], CurrentSLSteps)
+                        if ModificationSlStep != CurrentSLSteps:
+                            Modified_sl = float(Base_sl_ToRiskFreeCommission + ModificationSlStep * SymbolData.loc[position.symbol, 'slMovementInPoints'])
+                            request = {
+                                "action": mt5.TRADE_ACTION_SLTP,
+                                "position": position.ticket,
+                                "symbol": position.symbol,
+                                "sl": Modified_sl,
+                            }
+                            result_SL = mt5.order_send(request)
+    
+    if (mt5.account_info().equity) < BaseEquity - MaxLossInDollars + BaseEquityIncrease:
+        while len(mt5.positions_get()) > 0:
+            for i in range(len(positions)):
+                position = positions[i]
+                if position.type == 1:
+                    Base_sl_ToRiskFreeCommission = float(
+                        position.price_open - SymbolData.loc[position.symbol, 'MinPointForCommission'])
+                    Base_sl = position.sl
+                    
+                    if Base_sl > position.price_open:
+                        if (mt5.symbol_info_tick(position.symbol).ask < position.price_open - SymbolData.loc[
+                            position.symbol, 'MinPointToRiskFreeComiision']):
+                            request = {
+                                "action": mt5.TRADE_ACTION_SLTP,
+                                "position": position.ticket,
+                                "symbol": position.symbol,
+                                "sl": Base_sl_ToRiskFreeCommission,
+                            }
+                            result_SL = mt5.order_send(request)
+                            Base_sl = Base_sl_ToRiskFreeCommission
+                    
+                    if Base_sl < position.price_open:
+                        if ((Base_sl - mt5.symbol_info_tick(position.symbol).ask) // SymbolData.loc[
+                            position.symbol, 'slMovementInPoints']) > 0:
+                            ForwardSteps = int(((Base_sl - mt5.symbol_info_tick(position.symbol).ask) // SymbolData.loc[
+                                position.symbol, 'slMovementInPoints']))
+                            CurrentSLSteps = int((position.price_open - Base_sl) // SymbolData.loc[
+                                position.symbol, 'slMovementInPoints'])
+                            ModificationSlStep = max(
+                                ForwardSteps - SymbolData.loc[position.symbol, 'NumberOfStepsBehindPrice'],
+                                CurrentSLSteps)
+                            if ModificationSlStep != CurrentSLSteps:
+                                Modified_sl = float(
+                                    Base_sl_ToRiskFreeCommission - ModificationSlStep * SymbolData.loc[
+                                        position.symbol, 'slMovementInPoints'])
+                                request = {
+                                    "action": mt5.TRADE_ACTION_SLTP,
+                                    "position": position.ticket,
+                                    "symbol": position.symbol,
+                                    "sl": Modified_sl,
+                                }
+                                result_SL = mt5.order_send(request)
+                
+                if position.type == 0:
+                    Base_sl = position.sl
+                    Base_sl_ToRiskFreeCommission = float(
+                        position.price_open + SymbolData.loc[position.symbol, 'MinPointForCommission'])
+                    
+                    if Base_sl < position.price_open:
+                        if (mt5.symbol_info_tick(position.symbol).ask > position.price_open + SymbolData.loc[
+                            position.symbol, 'MinPointToRiskFreeComiision']):
+                            request = {
+                                "action": mt5.TRADE_ACTION_SLTP,
+                                "position": position.ticket,
+                                "symbol": position.symbol,
+                                "sl": Base_sl_ToRiskFreeCommission,
+                            }
+                            result_SL = mt5.order_send(request)
+                            Base_sl = Base_sl_ToRiskFreeCommission
+                    
+                    if Base_sl > position.price_open:
+                        if ((mt5.symbol_info_tick(position.symbol).ask - Base_sl) // SymbolData.loc[
+                            position.symbol, 'slMovementInPoints']) > 0:
+                            ForwardSteps = int(((mt5.symbol_info_tick(position.symbol).ask - Base_sl) // SymbolData.loc[
+                                position.symbol, 'slMovementInPoints']))
+                            CurrentSLSteps = int((Base_sl - position.price_open) // SymbolData.loc[
+                                position.symbol, 'slMovementInPoints'])
+                            ModificationSlStep = max(
+                                ForwardSteps - SymbolData.loc[position.symbol, 'NumberOfStepsBehindPrice'],
+                                CurrentSLSteps)
+                            if ModificationSlStep != CurrentSLSteps:
+                                Modified_sl = float(
+                                    Base_sl_ToRiskFreeCommission + ModificationSlStep * SymbolData.loc[
+                                        position.symbol, 'slMovementInPoints'])
+                                request = {
+                                    "action": mt5.TRADE_ACTION_SLTP,
+                                    "position": position.ticket,
+                                    "symbol": position.symbol,
+                                    "sl": Modified_sl,
+                                }
+                                result_SL = mt5.order_send(request)
+        
+        if (mt5.account_info().equity) < BaseEquity - MaxLossInDollars + BaseEquityIncrease:
+            Finish = True
