@@ -1,0 +1,736 @@
+# Import necessary libraries
+from datetime import datetime, timezone
+import copy
+from numpy import nan
+import numpy as np
+from keras.layers import RepeatVector
+from keras.layers import TimeDistributed
+from keras.models import Sequential
+from keras.layers.core import Activation, Dropout, Dense
+from keras.layers import Flatten, LSTM
+from keras.utils import plot_model
+from keras import layers
+from sklearn.model_selection import train_test_split
+import inspect
+import os
+import time
+from datetime import timedelta
+import pandas as pd
+from datetime import datetime, time
+import pickle
+import sys
+from geneticalgorithm import geneticalgorithm as ga
+
+# Define a dictionary for conversion coefficients for different currency pairs and instruments
+ValueToPIPConversionCoefficient = {
+    "AUDUSD": 0.0001,
+    "EURUSD": 0.0001,
+    "GBPUSD": 0.0001,
+    "NQ100": 1,
+    "NZDUSD": 0.0001,
+    "SPX500": 0.1,
+    "USDCAD": 0.0001,
+    "USDCHF": 0.0001,
+    "USDJPY": 0.01,
+    "WSt30_m": 10,
+    "WTI": 0.01,
+    "XAUUSD": 0.1,
+}
+
+# Define a dictionary to map minute-based timeframes to their names
+TimeFramesNameByMinute = {
+    '1': 'TIMEFRAME_M1',
+    '2': 'TIMEFRAME_M2',
+    '3': 'TIMEFRAME_M3',
+    '4': 'TIMEFRAME_M4',
+    '5': 'TIMEFRAME_M5',
+    '6': 'TIMEFRAME_M6',
+    '10': 'TIMEFRAME_M10',
+    '12': 'TIMEFRAME_M12',
+    '15': 'TIMEFRAME_M15',
+    '20': 'TIMEFRAME_M20',
+    '30': 'TIMEFRAME_M30',
+    '60': 'TIMEFRAME_H1',
+    '120': 'TIMEFRAME_H2',
+    '180': 'TIMEFRAME_H3',
+    '240': 'TIMEFRAME_H4',
+    '360': 'TIMEFRAME_H6',
+    '480': 'TIMEFRAME_H8',
+    '720': 'TIMEFRAME_H12',
+    '1440': 'TIMEFRAME_D1'
+}
+
+# Define a dictionary to map timeframe names back to their minute values
+TimeFramesMinuteByName = {v: k for k, v in TimeFramesNameByMinute.items()}
+
+# Check the platform and set file paths accordingly
+if sys.platform.startswith('win'):
+    # Windows file paths
+    ExtractedLevelsFolderPath =
+    LogFilePathAndName =
+    LogFolderPath =
+else:
+    # Linux/Unix file paths
+    ExtractedLevelsFolderPath =
+    LogFilePathAndName =
+    LogFolderPath =
+
+MinimumVolumeDict = {"AUDUSD": 30, "GBPUSD": 5, "EURUSD": 30, "NZDUSD": 30}
+AggMoveMetaSymbol = 'GBPUSD'
+TempInstrumentSet = [{"Dependent": ["GBPUSD"], "InDependent": [], "TimeFrame": "TIMEFRAME_M15"}, ]
+CorrelatedInstrumentsSet = TempInstrumentSet
+
+# Trading Time Variable
+start_time = time(9, 29, 0)  # to include 9:30
+end_time = time(20, 59, 0)  # Not to include 21:00
+
+
+# Define a custom date parser function
+def myparser(x):
+    # Parse the datetime string to a datetime object with microseconds
+    return datetime.strptime(str(x)[:23], '%Y-%m-%d %H:%M:%S.%f')
+
+
+# Function for Aggressive Move Detection and Result Generation
+def AggressiveMoveDetectionAndResult(AggMoveMinVolume, AggMoveMaxVolume, AggMoveMaxDeltaTime,
+                                     AggMoveMinSteps, AggMoveMaxSteps, AggMoveRestTime,
+                                     AggMoveMetaSymbol, AggMoveMaxVolOneTrade):
+    # Create a unique file name based on the input parameters
+    DetectedLevelsFilePathAndNameFutures = str(get_counter(LogFolderPath)) + 'MinV' + str(
+        int(AggMoveMinVolume)) + 'MaxV' + str(
+        int(AggMoveMaxVolume)) + 'MaxDeltaT' + str(int(AggMoveMaxDeltaTime * 1000)) + 'MinSteps' + str(
+        int(AggMoveMinSteps)) + 'MaxSteps' + str(int(AggMoveMaxSteps)) + 'RestTime' + str(
+        int(AggMoveRestTime)) + 'MetaSymbol' + AggMoveMetaSymbol + 'MaxVOneTrade' + str(int(AggMoveMaxVolOneTrade))
+
+    # Define file paths based on the platform
+    if sys.platform.startswith('win'):
+        # Windows file paths
+        DetectedLevelsFilePathAndNameFutures =
+    else:
+        # Linux/Unix file paths
+        DetectedLevelsFilePathAndNameFutures =
+
+    # Print function initial data
+    print("Running AggressiveMoveDetectionAndResult Function.....")
+    print("This function detects aggressive moves and writes the result to the following folder: ")
+    print(DetectedLevelsFilePathAndNameFutures)
+
+    # Create an empty dataframe for inserting results
+    AggressiveMoves = pd.DataFrame()
+
+    # Read Raw Tick Data
+    if sys.platform.startswith('win'):
+        # Windows file paths
+        TickDataFilePath =
+    else:
+        # Linux/Unix file paths
+        TickDataFilePath =
+
+    print(datetime.now(), 'Reading Data ...')
+    LastTickData = pd.read_csv(TickDataFilePath,
+                               sep=";",
+                               header=0,
+                               parse_dates=['DateTime'],
+                               date_parser=myparser,
+                               dtype='float')
+
+    print(datetime.now(), 'Data Read...')
+    if LastTickData.shape[0] == 0:
+        print("Last Tick Data is Empty.... Quitting ... ")
+        return AggressiveMoves, DetectedLevelsFilePathAndNameFutures
+
+    print(datetime.now(), 'time diff check starts...')
+    # Check if consecutive rows in Time have differences less than AggMoveMaxDeltaTime
+    LastTickData["MinTimeDelta"] = (pd.to_timedelta(
+        LastTickData['DateTime'].diff())).dt.microseconds <= AggMoveMaxDeltaTime
+    print(datetime.now(), 'time diff check ends...')
+    print('Level Detection Started for ', LastTickData.shape[0], ' Ticks')
+
+    # Detecting Aggressive Move Indices:
+    # if there is no aggressive move based on Time
+    if True not in LastTickData['MinTimeDelta']:
+        print('Aggressive Move Not Recognized... Quitting .... ')
+        return AggressiveMoves, DetectedLevelsFilePathAndNameFutures
+
+    print(datetime.now(), 'extracting moves indices...')
+
+    # if there exist at least one aggressive move based on Time - Extracting Indices
+    if True in LastTickData['MinTimeDelta']:
+        AggressiveMoveIndices = []
+        i = 0
+        while i < LastTickData.shape[0] - 2:
+            if LastTickData.loc[i, 'MinTimeDelta'] == False:
+                i += 1
+            else:
+                AggressiveMoveStartIndex = i
+                while LastTickData.loc[i + 1, 'MinTimeDelta'] == True and i + 1 < LastTickData.shape[0] - 1:
+                    i += 1
+                AggressiveMoveEndIndex = i
+                i += 1
+                AggressiveMoveIndices.append([AggressiveMoveStartIndex, AggressiveMoveEndIndex])
+
+        print(datetime.now(), 'extracting moves indices...Done ....')
+
+        if len(AggressiveMoveIndices) > 0:
+            # Extracting Aggressive Moves Properties:
+            print("Extracting Aggressive Moves Properties....")
+            print(datetime.now(), 'extracting moves properties.. Total Volume start....')
+
+            # Calculate the total volume for each aggressive move
+            sum_list = [sum(LastTickData.iloc[idx]['Volume'] for idx in indices) for indices in AggressiveMoveIndices]
+            AggressiveMoves['Total Volume'] = pd.Series(dtype=float)
+            AggressiveMoves['Total Volume'] = sum_list
+            print(datetime.now(), 'extracting moves properties.. Total Volume end....')
+
+            import numpy as np
+            print(datetime.now(), 'extracting moves properties.. Total Time start....')
+
+            # Calculate the total time for each aggressive move
+            datetime_values = LastTickData['DateTime'].values
+            total_seconds_list = [np.diff(datetime_values[indices]) for indices in AggressiveMoveIndices]
+            float_list = list(map(float, total_seconds_list))
+            AggressiveMoves['Total Time'] = (float_list)
+            print(len(total_seconds_list))
+            print(datetime.now(), 'extracting moves properties.. Total Time end....')
+
+            print(datetime.now(), 'extracting moves properties.. Maxvol start....')
+
+            # Calculate the maximum volume for each aggressive move
+            volume_values = LastTickData['Volume'].values
+            max_volume_list = [np.max(volume_values[indices]) for indices in AggressiveMoveIndices]
+            AggressiveMoves['MaxVol'] = pd.Series(dtype=float)
+            AggressiveMoves['MaxVol'] = pd.Series(max_volume_list)
+            print(len(max_volume_list))
+            print(datetime.now(), 'extracting moves properties.. Maxvol end....')
+
+            print(datetime.now(), 'extracting moves properties.. Max Price start....')
+
+            # Calculate the maximum price for each aggressive move
+            price_values = LastTickData['Last'].values
+            max_price_list = [np.max(price_values[indices]) for indices in AggressiveMoveIndices]
+            AggressiveMoves['Max Price in Movement'] = pd.Series(dtype=float)
+            AggressiveMoves['Max Price in Movement'] = pd.Series(max_price_list)
+            print(len(max_price_list))
+            print(datetime.now(), 'extracting moves properties.. Max Price end....')
+
+            print(datetime.now(), 'extracting moves properties.. Total steps start....')
+
+            # Calculate the total steps for each aggressive move
+            diff_list = [indices[1] - indices[0] for indices in AggressiveMoveIndices]
+            diff_list_modified = [diff + 1 for diff in diff_list]
+            AggressiveMoves['Total Steps'] = pd.Series(dtype=float)
+            AggressiveMoves['Total Steps'] = pd.Series(diff_list_modified)
+            print(len(diff_list_modified))
+            print(datetime.now(), 'extracting moves properties.. Total steps end....')
+
+            AggressiveMoves['MetaSymbol'] = pd.Series(dtype=str)
+            AggressiveMoves['MetaSymbol'] = 'GBPUSD'
+
+            print(datetime.now(), 'extracting moves properties.. start time start....')
+            first_indices = [indices[0] for indices in AggressiveMoveIndices]
+            AggressiveMoves['Start Time'] = pd.Series()
+            AggressiveMoves['Start Time'] = pd.Series(LastTickData.loc[first_indices, 'DateTime'].tolist())
+            print(datetime.now(), 'extracting moves properties.. start time end....')
+
+            print("Removing Aggressive Moves which do not satisfy Minimum requirements....")
+            # Removing Aggressive Moves which do not satisfy Minimum requirements:
+            print(AggressiveMoves.index)
+            print(AggressiveMoves.columns)
+            print(datetime.now(), 'extracting moves properties.. removing unwanted moves start....')
+
+            # Filter aggressive moves based on criteria
+            AggressiveMoves = AggressiveMoves[(AggressiveMoves['Total Volume'].astype(float) >= AggMoveMinVolume) &
+                                              (AggressiveMoves['Total Volume'].astype(float) <= AggMoveMaxVolume) &
+                                              (AggressiveMoves['MaxVol'].astype(float) > AggMoveMaxVolOneTrade) &
+                                              (AggressiveMoves['Total Time'].astype(float) < AggMoveRestTime)]
+            print(datetime.now(), 'extracting moves properties.. removing unwanted moves end....')
+
+            # Resetting Index Values
+            AggressiveMoves.reset_index(drop=True, inplace=True)
+
+            # Writing Results to Disk
+            AggressiveMoves.to_csv(DetectedLevelsFilePathAndNameFutures, sep=',')
+            return AggressiveMoves, DetectedLevelsFilePathAndNameFutures
+        else:
+            return AggressiveMoves, DetectedLevelsFilePathAndNameFutures
+
+
+# Function to Extract Futures OHLC Data
+def ExtractFuturesOHLCData():
+    import pandas as pd
+    from datetime import datetime
+    print("Reading OHLC Data ... ")
+
+    # Load the CSV file into a pandas dataframe
+    if sys.platform.startswith('win'):
+        # Windows file paths
+        df = pd.read_csv(, delimiter=';')
+    else:
+        # Linux/Unix file paths
+        df = pd.read_csv(, delimiter=';')
+
+    # Printing Data Time Range
+    print("OHLC data is between ", df['DateTime'].iloc[0], " and ", df['DateTime'].iloc[-1])
+
+    # Convert the time column to epoch format
+    df['DateTime'] = df['DateTime'].apply(
+        lambda x: int(datetime.strptime(x, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc).timestamp()))
+
+    # Transpose the dataframe and set the columns
+    df = df.T
+    df.columns = df.iloc[0].astype(int)
+    df = df[1:]
+    df.index = ['Price-GBPUSD-open-M15', 'Price-GBPUSD-high-M15', 'Price-GBPUSD-low-M15', 'Price-GBPUSD-close-M15']
+    return df
+
+
+# Function to Concatenate and Filter Volumes
+def ConcatAndFilterVolumes(ExtractedLevelsFolderPath):
+    print("Reading Detected Levels ...")
+
+    # Importing Ninja Exported file names
+    import os
+    RawFileNames = os.listdir(ExtractedLevelsFolderPath)
+
+    if len(RawFileNames) == 0:
+        print(
+            'No Files exist in \ .... waiting 10 seconds .... '
+            '\\ if you received an error here, levels are not written to disk correctly....')
+        time.sleep(10)
+        RawFileNames = os.listdir(ExtractedLevelsFolderPath)
+
+    ExportedRawFilesNames = []
+    FilteredLevels = pd.DataFrame()
+
+    for i in range(len(RawFileNames)):
+        temp = pd.read_csv(ExtractedLevelsFolderPath + "\\" + RawFileNames[i], index_col=0)
+        FilteredLevels = pd.concat([FilteredLevels, temp], axis=0)
+
+    FilteredLevels.reset_index(drop=True, inplace=True)
+    print("Levels Read from file successfully ....")
+    return FilteredLevels
+
+
+# Function to create a dictionary of levels from filtered levels data
+def CreateLevelsDict(FilteredLevels, CorrelatedInstrumentsSet, Data):
+    print("Creating Moves dictionary .... Adding Volumes to timeframes .... ")
+
+    # Create deep copies of FilteredLevels and Data
+    FilteredLevels2 = copy.deepcopy(FilteredLevels)
+    DataCopy = copy.deepcopy(Data)
+
+    # Convert "Start Time" column to datetime and then to epoch format
+    FilteredLevels2["Start Time"] = pd.to_datetime(FilteredLevels2["Start Time"], format="%Y-%m-%d %H:%M:%S.%f")
+    FilteredLevels2['Start Time'] = (FilteredLevels2['Start Time'] - datetime(1970, 1, 1)).dt.total_seconds()
+
+    AllDataLevelsDict = []
+
+    # Iterate through CorrelatedInstrumentsSet
+    for i in range(len(CorrelatedInstrumentsSet)):
+        TempLevelsTimeFloored = copy.deepcopy(FilteredLevels2)
+        multiplier = int(TimeFramesMinuteByName[CorrelatedInstrumentsSet[i]["TimeFrame"]]) * 60
+
+        # Floor "Start Time" to the nearest multiple of the timeframe
+        TempLevelsTimeFloored["Start Time"] = (
+                TempLevelsTimeFloored["Start Time"] - TempLevelsTimeFloored["Start Time"] % multiplier).astype(int)
+
+        TimeStamps = DataCopy.columns.to_list()
+        LevelsDict = {key: [] for key in TimeStamps}
+
+        symbols = CorrelatedInstrumentsSet[i]["InDependent"] + CorrelatedInstrumentsSet[i]["Dependent"]
+
+        # Populate LevelsDict with levels data
+        for k in range(TempLevelsTimeFloored.shape[0]):
+            if TempLevelsTimeFloored.loc[k, "MetaSymbol"] in symbols:
+                LevelsDict[TempLevelsTimeFloored.loc[k, "Start Time"]] = LevelsDict[TempLevelsTimeFloored.loc[
+                    k, "Start Time"]] + [TempLevelsTimeFloored.iloc[k, :]]
+
+        AllDataLevelsDict.append(LevelsDict)
+
+    print("Successful ... Levels Dictionary is created ....")
+    return AllDataLevelsDict
+
+
+# Function to add levels data to price data
+def AddLevelsToPriceData(AllDataLevelsDict, Data, CorrelatedInstrumentsSet):
+    print("Adding levels to price data ...")
+    DataCopy = copy.deepcopy(Data)
+
+    for i in range(len(AllDataLevelsDict)):
+        Allsymbols = CorrelatedInstrumentsSet[i]["InDependent"] + CorrelatedInstrumentsSet[i]["Dependent"]
+
+        for tempsymbol in Allsymbols:
+            IndexInstrumentPrice = "Price-" + tempsymbol
+            IndexInstrumentVolume = "Volume-" + tempsymbol
+            DataCopy.loc[IndexInstrumentPrice, :] = nan
+            DataCopy.loc[IndexInstrumentVolume, :] = nan
+
+        TempLevelsDict = AllDataLevelsDict[i]
+
+        for key in TempLevelsDict.keys():
+            if len(TempLevelsDict[key]) > 0:
+                symbols = []
+
+                for j in range(len(TempLevelsDict[key])):
+                    symbols.append(TempLevelsDict[key][j]['MetaSymbol'])
+
+                UniqueSymbols = list(dict.fromkeys(symbols))
+
+                for symbol in UniqueSymbols:
+                    PriceList = []
+                    VolumeList = []
+
+                    for j in range(len(TempLevelsDict[key])):
+                        if TempLevelsDict[key][j]['MetaSymbol'] == symbol:
+                            PriceList.append(TempLevelsDict[key][j]['Max Price in Movement'])
+                            VolumeList.append(TempLevelsDict[key][j]['Total Volume'])
+
+                    weighted_average_price = sum(weight * value for weight, value in zip(VolumeList, PriceList)) / sum(
+                        VolumeList)
+
+                    TotalVolume = sum(VolumeList)
+                    IndexInstrumentPrice = "Price-" + symbol
+                    IndexInstrumentVolume = "Volume-" + symbol
+
+                    DataCopy.loc[IndexInstrumentPrice, key] = weighted_average_price
+                    DataCopy.loc[IndexInstrumentVolume, key] = TotalVolume
+
+    print("Levels are added to Data ....")
+    return DataCopy
+
+
+# Function to prepare data for LSTM
+def PrepareForLSTM(Data, PreviousBars, ForwardBars, CorrelatedInstrumentsSet):
+    print("Creating LSTM Data ....")
+
+    # Create a deep copy of the input data
+    DataCopy = copy.deepcopy(Data)
+
+    # Get the total number of bars in the data
+    TotalDataBars = DataCopy.shape[1]
+
+    # Calculate the size of the sliced bar
+    SlicedBarSize = PreviousBars + ForwardBars
+
+    # Calculate the total number of extractable samples
+    TotalExtractableSamples = TotalDataBars - SlicedBarSize + 1
+
+    DataForLSTM = []
+
+    # Iterate through the data to create LSTM input samples
+    for i in range(TotalExtractableSamples):
+        SlicedDataFrame = DataCopy.iloc[:, i:i + SlicedBarSize]
+        tempdata = copy.deepcopy(SlicedDataFrame)
+        Indices = tempdata.index
+        price_rows = tempdata.index[tempdata.index.str.startswith('Price')]
+
+        # Calculate the base price
+        BasePrice = tempdata.iloc[0, PreviousBars]
+        symbol = "GBPUSD"
+
+        # Normalize price data by subtracting the base price and dividing by the PIP conversion coefficient
+        tempdata.loc[price_rows, :] = tempdata.loc[price_rows, :].sub(BasePrice)
+        tempdata.loc[price_rows, :] = tempdata.loc[price_rows, :].div(ValueToPIPConversionCoefficient[symbol])
+
+        # Drop open and close values as they are not needed
+        DataForLSTM.append(tempdata.drop(['Price-GBPUSD-open-M15', 'Price-GBPUSD-close-M15', 'DateTime']))
+
+    print("LSTM Data is created ....")
+    return DataForLSTM
+
+
+# Function to combine level volumes and PIPs
+def CombineVolumeAndPIPSByMul(RawLSTMData, CorrelatedInstrumentsSet):
+    print("Combining Level volumes and PIPs ....")
+
+    # Create a deep copy of the input data
+    DataCopy = copy.deepcopy(RawLSTMData)
+
+    Allsymbols = CorrelatedInstrumentsSet[0]["InDependent"] + CorrelatedInstrumentsSet[0]["Dependent"]
+
+    # Iterate through the data to combine volume and PIPs
+    for i in range(len(DataCopy)):
+        for tempsymbol in Allsymbols:
+            IndexInstrumentPrice = "Price-" + tempsymbol
+            IndexInstrumentVolume = "Volume-" + tempsymbol
+            NewCombinedIndex = "PriceVol-" + tempsymbol
+            DataCopy[i].loc[NewCombinedIndex, :] = DataCopy[i].loc[IndexInstrumentPrice, :] * DataCopy[i].loc[
+                                                                                              IndexInstrumentVolume, :]
+
+            # Drop the individual price and volume columns
+            DataCopy[i].drop([IndexInstrumentVolume, IndexInstrumentPrice], axis=0, inplace=True)
+
+    print("Level volumes and PIPs are combined ....")
+    return DataCopy
+
+
+# Function to extract X and Y data for LSTM
+def ExtractXandYDataForLSTM(RawLSTMData, CorrelatedInstrumentsSet, PreviousBars, ForwardBars):
+    print("Creating X and Y data ....")
+
+    # Create a deep copy of the input data
+    DataCopy = copy.deepcopy(RawLSTMData)
+
+    TempX = pd.DataFrame()
+    TempY = pd.DataFrame()
+
+    TotalSamples = len(DataCopy)
+
+    dependentsymbol = CorrelatedInstrumentsSet[0]["Dependent"][0]
+
+    # Define dependent variable attributes
+    DependentVariableAttributes = [
+        "Price-" + dependentsymbol + "-" + "high" + "-" + CorrelatedInstrumentsSet[0]["TimeFrame"].split(sep="_")[1],
+        "Price-" + dependentsymbol + "-" + "low" + "-" + CorrelatedInstrumentsSet[0]["TimeFrame"].split(sep="_")[1]
+    ]
+
+    NumberOfDependentAttributes = len(DependentVariableAttributes)
+    NumberOfInDependentAttributes = DataCopy[0].shape[0]
+
+    for i in range(len(DataCopy)):
+        XData = DataCopy[i].iloc[:, 0:PreviousBars]
+        YData = (DataCopy[i].loc[DependentVariableAttributes]).iloc[:, PreviousBars:]
+
+        if TempX.empty:
+            TempX = XData.transpose()
+            TempY = YData.transpose()
+        else:
+            TempX = TempX.append(XData.transpose())
+            TempY = TempY.append(YData.transpose())
+
+    XDataNPArray = TempX.fillna(0).to_numpy()
+    YDataNPArray = TempY.to_numpy()
+
+    # Reshape the data for LSTM input
+    X = np.array(XDataNPArray).reshape(TotalSamples, PreviousBars, NumberOfInDependentAttributes)
+    Y = np.array(YDataNPArray).reshape(TotalSamples, ForwardBars, NumberOfDependentAttributes)
+
+    print("X and Y data are created ....")
+    return X, Y
+
+
+# Function to create an LSTM model
+def LSTMModel1(Hiddenlayers1, Hiddenlayers2, PreviousBars, ForwardBars, TotalNumberOfInputFeatures,
+               TotalNumberOfOutputFeatures, XTrain, YTrain, XTest, YTest):
+    # Normalizing Data
+    # Calculating Normalizing layer data for X
+    XDataToBeUsedForNormalization = XTrain
+    XNormalizingLayer = layers.Normalization(axis=None)
+    XNormalizingLayer.adapt(XDataToBeUsedForNormalization)
+
+    # Normalizing X Data for model TRAIN
+    XTrainForModel = XNormalizingLayer(XTrain)
+
+    # Calculating Normalizing layer data for Y
+    YDataToBeUsedForNormalization = YTrain.astype(np.float32)
+    YNormalizingLayer = layers.Normalization(axis=None)
+    YNormalizingLayer.adapt(YDataToBeUsedForNormalization)
+
+    # Normalizing Y Data for model TRAIN
+    YTrainForModel = YNormalizingLayer(YTrain.astype(np.float32))
+
+    # Calculate Inverse Normalizing layer for Y data to capture real-world outputs
+    YNormalizingInvertLayer = layers.Normalization(axis=None, invert=True)
+    YNormalizingInvertLayer.adapt(YDataToBeUsedForNormalization)
+
+    # Normalizing X Data for model TEST
+    XTestForModel = XNormalizingLayer(XTest)
+
+    # Normalizing Y Data for model TEST
+    YTestForModel = YNormalizingLayer(YTest.astype(np.float32))
+
+    model = Sequential()
+    model.add(LSTM(Hiddenlayers1, activation='tanh', input_shape=(PreviousBars, TotalNumberOfInputFeatures)))
+    model.add(RepeatVector(ForwardBars))
+    model.add(LSTM(Hiddenlayers2, activation='tanh', return_sequences=True))
+    model.add(TimeDistributed(Dense(TotalNumberOfOutputFeatures)))
+    model.compile(optimizer='adam', loss='mse', metrics=['mae'])
+
+    # Fit the model
+    history = model.fit(XTrainForModel, YTrainForModel, validation_data=(XTestForModel, YTestForModel), epochs=100,
+                        verbose=1, batch_size=3, use_multiprocessing=True)
+
+    LSTMModelVersion = inspect.stack()[0][3]
+
+    return model, XNormalizingLayer, YNormalizingInvertLayer, history, LSTMModelVersion
+
+
+# Function to get a counter for file naming
+def get_counter(LogFolderPath):
+    counter_file = os.path.join(LogFolderPath, 'counter.txt')
+
+    if os.path.exists(counter_file):
+        # If the counter file exists, read its value and increment by 1
+        with open(counter_file, 'r') as f:
+            counter = int(f.read().strip())
+            counter += 1
+    else:
+        # If the counter file doesn't exist, start the counter from 1
+        counter = 1
+
+    # Write the updated counter value to the file
+    with open(counter_file, 'w') as f:
+        f.write(str(counter))
+
+    counter_str = str(counter) + '-'
+    return counter_str
+
+
+# Function for data preparation
+def DataPreparation(DetectedLevelsFilePathAndNameFutures):
+    # Read the filtered levels from a CSV file
+    FilteredLevels = pd.read_csv(DetectedLevelsFilePathAndNameFutures)
+
+    # Extract OHLC data
+    Data = ExtractFuturesOHLCData()
+
+    # Create a dictionary of levels
+    AllDataLevelsDict = CreateLevelsDict(FilteredLevels, CorrelatedInstrumentsSet, Data)
+
+    # Add levels to price data
+    DataCopy = AddLevelsToPriceData(AllDataLevelsDict, Data, CorrelatedInstrumentsSet)
+
+    Indices = DataCopy.columns
+    EpochData = pd.DataFrame(DataCopy.columns).transpose()
+    EpochData.columns = Indices
+    RegularData = pd.DataFrame(pd.to_datetime(EpochData.loc['DateTime', :], unit='s')).transpose()
+    RegularData.columns = Indices
+
+    # Filter data based on time
+    mask = (RegularData.transpose()['DateTime'].dt.time > start_time) & (
+            RegularData.transpose()['DateTime'].dt.time < end_time)
+    DataCopy = DataCopy.loc[:, mask]
+
+    # Drop NaN values for weekend times
+    DataCopy = DataCopy.dropna(
+        subset=['Price-GBPUSD-open-M15', 'Price-GBPUSD-high-M15', 'Price-GBPUSD-low-M15', 'Price-GBPUSD-close-M15'],
+        axis=1)
+
+    return DataCopy
+
+# Function to perform training of LSTM models with specified parameters
+def LSTMTrainingFunction(Data, PreviousBars, ForwardBars, CorrelatedInstrumentsSet, TempHiddenLayerCounts):
+    # Create a name for the model based on its configuration
+    ModelName_Vars = "Dep-" + "".join(CorrelatedInstrumentsSet[0]["Dependent"]) + "_InDep-" + "".join(
+        CorrelatedInstrumentsSet[0]["InDependent"])
+    ModelName_BarsCount = "FBars-" + str(ForwardBars) + "_PBars-" + str(PreviousBars)
+    ModelName_TimeFrame = CorrelatedInstrumentsSet[0]["TimeFrame"].split(sep="_")[1]
+    ModelName_HiddenLayers = "HiddenLayers-" + str(TempHiddenLayerCounts)
+    ModelName = ModelName_Vars + "_" + ModelName_TimeFrame + "_" + ModelName_BarsCount + "_" + ModelName_HiddenLayers
+
+    # Prepare data for LSTM model
+    RawLSTMDatabeforFinalShape = PrepareForLSTM(Data, PreviousBars, ForwardBars, CorrelatedInstrumentsSet)
+    DataForLSTMPriceAndVolMul = CombineVolumeAndPIPSByMul(RawLSTMDatabeforFinalShape, CorrelatedInstrumentsSet)
+    X, Y = ExtractXandYDataForLSTM(DataForLSTMPriceAndVolMul, CorrelatedInstrumentsSet, PreviousBars, ForwardBars)
+    XTrain, XTest, YTrain, YTest = train_test_split(X, Y, test_size=.3, random_state=1)
+
+    # Set the number of hidden layers for the LSTM model
+    Hiddenlayers1 = TempHiddenLayerCounts
+    Hiddenlayers2 = TempHiddenLayerCounts
+    TotalNumberOfInputFeatures = DataForLSTMPriceAndVolMul[0].shape[0]
+    TotalNumberOfOutputFeatures = 2
+
+    # Train the LSTM model
+    model, XNormalizingLayer, YNormalizingInvertLayer, history, LSTMModelVersion = LSTMModel1(Hiddenlayers1,
+                                                                                              Hiddenlayers2,
+                                                                                              PreviousBars,
+                                                                                              ForwardBars,
+                                                                                              TotalNumberOfInputFeatures,
+                                                                                              TotalNumberOfOutputFeatures,
+                                                                                              XTrain,
+                                                                                              YTrain, XTest,
+                                                                                              YTest)
+
+    # Get the last train and test MSE values
+    LastTrainMSE = round(history.history['loss'][-1], 3)
+    LastTestMSE = round(history.history['val_loss'][-1], 3)
+
+    # Generate a one-liner report and file name
+    OneLinerReport = get_counter(LogFolderPath) + "-LSTMModelVersion " + LSTMModelVersion + " " + ModelName + " LastTrainMSE " + str(
+        LastTrainMSE) + " LastTestMSE " + str(LastTestMSE)
+    OneLinerName = get_counter(LogFolderPath) + "-LSTMModelVersion " + LSTMModelVersion + " " + ModelName
+
+    # Append the report to the log file
+    with open(LogFilePathAndName, 'a') as result:
+        result.write(OneLinerReport + '\n')
+
+    # Save the training history to a file
+    with open(LogFolderPath + "\\" + OneLinerName + ".hisrory", 'wb') as dumper:
+        pickle.dump(history, dumper)
+
+    return LastTrainMSE, LastTestMSE
+
+# Function to calculate fitness for genetic algorithm optimization
+def FitnessFunctionForGA(individual):
+    # Dictionary of coefficients mapping genetic variables to real values
+    CoefficientDict = {
+        'AggMoveMinVolume': AAAA,
+        'AggMoveMaxVolume': AAAA,
+        'AggMoveMaxDeltaTime': AAAA,
+        'AggMoveMinSteps': AAAA,
+        'AggMoveMaxSteps': AAAA,
+        'AggMoveRestTime': AAA
+        'AggMoveMaxVolOneTrade': AAAA,
+        'ForwardBars': AAAA,
+        'PreviousBars': AAAA,
+        'TempHiddenLayerCounts': AAAA
+    }
+
+    # Multiply genetic variables by corresponding values from the dictionary
+    new_variables = {key: value * CoefficientDict[key] for key, value in zip(CoefficientDict.keys(), individual)}
+
+    # Unpack the new variables dictionary into individual variables
+    AggMoveMinVolume, \
+    AggMoveMaxVolume, \
+    AggMoveMaxDeltaTime, \
+    AggMoveMinSteps, \
+    AggMoveMaxSteps, \
+    AggMoveRestTime, \
+    AggMoveMaxVolOneTrade, \
+    ForwardBars, \
+    PreviousBars, \
+    TempHiddenLayerCounts = new_variables.values()
+
+    ForwardBars, PreviousBars, AggMoveMinSteps, AggMoveMaxSteps, TempHiddenLayerCounts = int(ForwardBars), int(
+        PreviousBars), int(AggMoveMinSteps), int(AggMoveMaxSteps), int(TempHiddenLayerCounts)
+
+    # Use the model variables in your calculations or model training
+    DetectedLevelsFilePathAndNameFutures = AggressiveMoveDetectionAndResult(AggMoveMinVolume, AggMoveMaxVolume, AggMoveMaxDeltaTime, AggMoveMinSteps,
+                                     AggMoveMaxSteps, AggMoveRestTime, AggMoveMetaSymbol, AggMoveMaxVolOneTrade)[1]
+
+    LSTMData = DataPreparation(DetectedLevelsFilePathAndNameFutures)
+    LastTrainMSE, LastTestMSE = LSTMTrainingFunction(LSTMData, PreviousBars, ForwardBars, CorrelatedInstrumentsSet,
+                                                     TempHiddenLayerCounts)
+    # Calculate the fitness values based on your problem's objectives
+    fitness_value1 = LastTrainMSE
+    fitness_value2 = LastTestMSE
+
+    # Return the fitness values as a tuple
+    return fitness_value1
+
+
+# Define the boundaries for each hyperparameter to be optimized by the genetic algorithm.
+varbound = np.array([[1, 6],    # AggMoveMinVolume
+                     [1, 3],    # AggMoveMaxVolume
+                     [0, 5],    # AggMoveMaxDeltaTime
+                     [1, 3],    # AggMoveMinSteps
+                     [1, 3],    # AggMoveMaxSteps
+                     [1, 20],   # AggMoveRestTime
+                     [5, 50],   # AggMoveMaxVolOneTrade
+                     [1, 10],   # ForwardBars
+                     [1, 10],   # PreviousBars
+                     [3, 10],   # TempHiddenLayerCounts
+                     ])
+
+# Define the variable types for each hyperparameter (all are integers).
+vartype = np.array([['int'], ['int'], ['int'], ['int'], ['int'], ['int'], ['int'], ['int'], ['int'], ['int']])
+
+# Create a genetic algorithm model.
+model = ga(function=FitnessFunctionForGA,    # The fitness function to optimize.
+           dimension=10,                     # Number of hyperparameters to optimize.
+           variable_type_mixed=vartype,     # Variable types for each hyperparameter.
+           variable_boundaries=varbound,    # Boundaries for each hyperparameter.
+           function_timeout=20000)          # Maximum time to evaluate the fitness function.
+
+# Run the genetic algorithm to find the optimal hyperparameters.
+model.run()
