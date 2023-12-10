@@ -1,0 +1,187 @@
+# Description:
+# This script analyzes exported Ninja Files to extract levels and export them to text files.
+# Two files are generated for each futures contract: one with futures price and one with meta price.
+
+import os
+import time
+import pandas as pd
+from datetime import datetime, timedelta
+import MetaTrader5 as mt5
+import winshell
+
+# Initialize MetaTrader5
+if not mt5.initialize():
+    print("initialize() failed, error code =", mt5.last_error())
+    quit()
+
+# Define file paths
+DesktopPath = winshell.desktop()
+CurrentFolder = DesktopPath + '\\BackTest'
+ExportedNinjaFilesFolder = CurrentFolder + '\\RawExportedNinjaFiles'
+BaseDataFilePath = CurrentFolder + '\\BackTest-BaseDataDict.txt'
+SourceVariablesFilePath = CurrentFolder + '\\SourceVariables.xlsx'
+DetectedLevelsFolder = CurrentFolder + '\\DetectedLevels'
+
+# Load BaseDataDict
+BaseDataDict = pd.read_csv(BaseDataFilePath, header=None, index_col=0, squeeze=True).to_dict()
+MetaTimeZoneDifferenceInHours = int(BaseDataDict['MetaTimeZoneDifferenceInHours'])  # in Hours
+
+print(" Hi ... This program runs in Desktop\\BackTest ... keep this in mind ....")
+print('Broker Time Zone difference is considered to be', MetaTimeZoneDifferenceInHours, 'Hours ... Make sure this is right, otherwise, make it correct in BaseDataDict...')
+
+def RawFilesList(ExportedNinjaFilesFolder):
+    # 'Importing Ninja Exported file names '
+    RawFileNames = os.listdir(ExportedNinjaFilesFolder)
+    if len(RawFileNames) == 0:
+        print('No Files exist in \\RawExportedNinjaFiles')
+        quit()
+    NinjaSymbols = []
+    for i in range(len(RawFileNames)):
+        NinjaSymbols.append(RawFileNames[i].split(".", 1)[0])
+    return NinjaSymbols
+
+def AggressiveMoveDetectionAndResult(LastTickData, AggMoveMinVolume, AggMoveMaxVolume, AggMoveMaxDeltaTime, AggMoveMinSteps, AggMoveMaxSteps, AggMoveStopLoss, AggMoveRisktoRewardRatio, AggMoveRestTime, AggMoveMetaSymbol):
+    AggressiveMoves = pd.DataFrame()
+    LastTickData["MinTimeDelta"] = (pd.to_timedelta(LastTickData['Time'].diff())).dt.microseconds <= AggMoveMaxDeltaTime
+    
+    # Global variable for debugging
+    global test
+    test = LastTickData
+    
+    print('Level Detection Started for', LastTickData.shape[0], 'Ticks in', NinjaContract, 'Contract')
+    
+    # Detecting Aggressive Move Indices:
+    
+    # if there is not any aggressive move based on Time
+    if True not in LastTickData['MinTimeDelta']:
+        return AggressiveMoves
+    
+    # if there exist at least one aggressive move based on Time - Extracting Indices - the first steps are missed - added later
+    if True in LastTickData['MinTimeDelta']:
+        AggressiveMoveIndices = []
+        i = 0
+        while i < LastTickData.shape[0] - 2:
+            print(i, 'Ticks scanned so far ...', len(AggressiveMoveIndices), 'Raw Moves Detected.', end='\r')
+            if LastTickData.loc[i, 'MinTimeDelta'] == False:
+                i += 1
+            else:
+                AggressiveMoveStartIndex = i
+                while LastTickData.loc[i + 1, 'MinTimeDelta'] == True and i + 1 < LastTickData.shape[0] - 1:
+                    i += 1
+                AggressiveMoveEndIndex = i
+                i += 1
+                AggressiveMoveIndices.append([AggressiveMoveStartIndex, AggressiveMoveEndIndex])
+        
+        # Applying Minimum required steps in aggressive move
+        if len(AggressiveMoveIndices) > 0:
+            AggressiveMoveIndices = pd.DataFrame(AggressiveMoveIndices).loc[AggMoveMinSteps < (pd.DataFrame(AggressiveMoveIndices)[1] - pd.DataFrame(AggressiveMoveIndices)[0]), :]
+            AggressiveMoveIndices = AggressiveMoveIndices.loc[AggressiveMoveIndices[1] - AggressiveMoveIndices[0] < AggMoveMaxSteps, :].values.tolist()
+        
+        # the following if is different from the one above since the moves with minimum steps are removed and there may not be any more moves
+        if len(AggressiveMoveIndices) > 0:
+            # Extracting Aggressive Move Properties:
+            for i in range(len(AggressiveMoveIndices)):
+                AggressiveMoveStartIndex = round(AggressiveMoveIndices[i][0]) - 1  # missed step is added here
+                AggressiveMoveEndIndex = round(AggressiveMoveIndices[i][1])
+                # Extract properties and populate AggressiveMoves DataFrame
+                
+                # Remove unwanted Aggressive Moves based on conditions
+                AggressiveMoves = AggressiveMoves[(AggressiveMoves['Total Volume'] >= AggMoveMinVolume) &
+                                                  (AggressiveMoves['Total Volume'] <= AggMoveMaxVolume) &
+                                                  (AggressiveMoves['Total Time'] < AggMoveRestTime)]
+                
+                AggressiveMoves.reset_index(drop=True, inplace=True)
+    
+    return AggressiveMoves
+
+def ExtractMetaPrice(symbol, StartTime, EndTime):
+    # request symbol ticks
+    ticks = pd.DataFrame()
+    ticks = pd.DataFrame(mt5.copy_ticks_range(symbol, StartTime, EndTime, mt5.COPY_TICKS_ALL))
+    MaxTimeForwardToDownloadMinimumTickDataForALevelInMeta = 0
+    
+    while ticks.shape[0] < 2:
+        print('adding time...', datetime.utcnow(), end='\r')
+        EndTime = EndTime + timedelta(seconds=1)
+        MaxTimeForwardToDownloadMinimumTickDataForALevelInMeta += 1
+        ticks = pd.DataFrame(mt5.copy_ticks_range(symbol, StartTime, EndTime, mt5.COPY_TICKS_ALL))
+        if MaxTimeForwardToDownloadMinimumTickDataForALevelInMeta == 200:  # in seconds
+            print('No Ticks Available .... Returning 0,0 as min and max prices ... ')
+            return 0, 0
+    
+    MinimumMetaPrice = ticks['bid'].min()
+    MaximumMetaPrice = ticks['ask'].max()
+    
+    return MinimumMetaPrice, MaximumMetaPrice
+
+def myparser(x):
+    return datetime.strptime(str(x)[:22], '%Y%m%d %H%M%S %f')
+
+while True:
+    Order = input('Press any key for Calculation add q for quit:')
+    if Order != 'q':
+        # Load SourceVariables data
+        SourceVariables = pd.read_excel(SourceVariablesFilePath, sheet_name='SourceFileNames')
+        SourceVariables = SourceVariables.loc[SourceVariables.loc[:, 'Calculate'] > 0, :]
+        SourceVariables.reset_index(inplace=True, drop=True)
+        
+        # Initialize FinalData DataFrame
+        FinalData = pd.DataFrame()
+        
+        for i in range(SourceVariables.shape[0]):
+            NinjaContract = str(SourceVariables.loc[i, 'NinjaFileName']).split(".", 1)[0]
+            print('Reading Source Data File for', NinjaContract)
+            
+            LastPath = ExportedNinjaFilesFolder + '\\' + str(SourceVariables.loc[i, 'NinjaFileName'])
+            try:
+                os.path.exists(LastPath)
+            except:
+                print(LastPath, 'Does not exist .. Moving on to next file...')
+            else:
+                LastTickData = pd.DataFrame()
+                LastTickData = pd.read_csv(LastPath, sep=";", header=None,
+                                           names=['Time', 'Last Price', 'Bid Price', 'Ask Price', 'Last Volume'],
+                                           parse_dates=['Time'], date_parser=myparser)
+                # Converting Strings to float for volumes and prices - Note the column numbers
+                LastTickData.iloc[:, 1:5] = LastTickData.iloc[:, 1:5].astype(float)
+                
+                # Extract parameters for AggressiveMoveDetectionAndResult function
+                AggMoveMinVolume = SourceVariables.loc[i, 'AggMoveMinVolume']
+                AggMoveMaxVolume = SourceVariables.loc[i, 'AggMoveMaxVolume']
+                AggMoveMaxDeltaTime = SourceVariables.loc[i, 'AggMoveMaxDeltaTime']  # microseconds
+                AggMoveMinSteps = SourceVariables.loc[i, 'AggMoveMinSteps']
+                AggMoveMaxSteps = SourceVariables.loc[i, 'AggMoveMaxSteps']
+                AggMoveStopLoss = SourceVariables.loc[i, 'AggMoveStopLoss']
+                AggMoveRisktoRewardRatio = SourceVariables.loc[i, 'AggMoveRisktoRewardRatio']
+                AggMoveRestTime = float(SourceVariables.loc[i, 'AggMoveRestTime'])  # seconds
+                AggMoveMetaSymbol = SourceVariables.loc[i, 'MetaSymbol']  # seconds
+                
+                # Call AggressiveMoveDetectionAndResult function
+                DataForNN = AggressiveMoveDetectionAndResult(LastTickData=LastTickData,
+                                                            AggMoveMinVolume=AggMoveMinVolume,
+                                                            AggMoveMaxVolume=AggMoveMaxVolume,
+                                                            AggMoveMaxDeltaTime=AggMoveMaxDeltaTime,
+                                                            AggMoveMinSteps=AggMoveMinSteps,
+                                                            AggMoveMaxSteps=AggMoveMaxSteps,
+                                                            AggMoveStopLoss=AggMoveStopLoss,
+                                                            AggMoveRisktoRewardRatio=AggMoveRisktoRewardRatio,
+                                                            AggMoveRestTime=AggMoveRestTime,
+                                                            AggMoveMetaSymbol=AggMoveMetaSymbol)
+                print(NinjaContract, 'Done... Total Detected Levels:', DataForNN.shape[0])
+                DetectedLevelsFilePathAndNameFutures = DetectedLevelsFolder + '\\' + str(
+                    SourceVariables.loc[i, 'NinjaFileName']).split(".", 1)[0] + ' DetectedLevels-FuturesPrices-MetaTime.txt'
+                # DataForNN.to_csv(DetectedLevelsFilePathAndNameFutures, sep=',')
+                
+                print('Converting to Meta Price ... ')
+                symbol = SourceVariables.loc[i, 'MetaSymbol']
+                for j in range(DataForNN.shape[0]):
+                    print("Converting Futures Price to Meta Price for", NinjaContract, 'Level Number:', j, 'out of', DataForNN.shape[0])
+                    MinMetaPrice, MaxMetaPrice = ExtractMetaPrice(symbol, DataForNN.loc[j, 'Start Time'], DataForNN.loc[j, 'End Time'])
+                    DataForNN.loc[j, 'Min Price in Movement'] = MinMetaPrice
+                    DataForNN.loc[j, 'Max Price in Movement'] = MaxMetaPrice
+                DetectedLevelsFilePathAndNameMeta = DetectedLevelsFolder + '\\' + str(
+                    SourceVariables.loc[i, 'NinjaFileName']).split(".", 1)[0] + ' DetectedLevels-MetaPrices-MetaTime.txt'
+                DataForNN.to_csv(DetectedLevelsFilePathAndNameMeta, sep=',')
+        time.sleep(10)
+    else:
+        quit()
