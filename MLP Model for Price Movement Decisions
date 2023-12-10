@@ -1,0 +1,112 @@
+# This script collects historical forex data, preprocesses it, trains an MLP classifier, and analyzes its performance in making trading decisions based on price movements for the EUR/USD currency pair. It calculates a winrate to evaluate the model's effectiveness. The trained model is also saved for future use.
+# Import necessary libraries
+from sklearn import metrics, preprocessing
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.neural_network import MLPClassifier
+from sklearn.preprocessing import StandardScaler
+import MetaTrader5 as mt5
+import pandas as pd
+import math
+import numpy as np
+
+# Initialize MetaTrader5
+if not mt5.initialize():
+    print("initialize() failed, error code =", mt5.last_error())
+    quit()
+
+# Define trading symbol and parameters
+symbol = 'EURUSD'
+Parameters = [
+    [
+        [symbol, 'close', 0], [symbol, 'close', 1], [symbol, 'open', 1], [symbol, 'high', 1], [symbol, 'low', 1],
+        [symbol, 'close', 2], [symbol, 'open', 2], [symbol, 'high', 2], [symbol, 'low', 2],
+        [symbol, 'close', 3], [symbol, 'open', 3], [symbol, 'high', 3], [symbol, 'low', 3]
+    ],
+]
+datacount = 3700
+DataforNN = pd.DataFrame()
+MoveUp = 0
+MoveDown = 0
+NeutralMove = 0
+ModelPriceChange = -0.00006
+
+# Loop to collect historical data
+for i in range(datacount):
+    TempData1 = []
+    rate = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, i, len(Parameters[0]))
+    rate = pd.DataFrame(rate)
+    rate = rate.iloc[::-1]
+    rate.reset_index(drop=True, inplace=True)
+
+    for j in range(len(Parameters[0])):
+        Data = rate.loc[Parameters[0][j][2], Parameters[0][j][1]]
+        TempData1.append(Data)
+
+    TempData2 = pd.DataFrame(TempData1).transpose()
+    Min = float(TempData2.min(axis=1))
+    Max = float(TempData2.max(axis=1))
+
+    for j in range(len(Parameters[0]) - 1):
+        TempData2.iloc[0, j + 1] = ((TempData2.iloc[0, j + 1] - Min) / (Max - Min)) * 0.8 + 0.1
+
+    PricechangeInpips = (rate.loc[0, 'close'] - rate.loc[1, 'close'])
+    TempData2.iloc[0, 0] = 1 - np.digitize(PricechangeInpips, [ModelPriceChange])
+
+    if DataforNN.empty:
+        DataforNN = TempData2
+    else:
+        DataforNN = pd.concat([DataforNN, TempData2], axis=0, ignore_index=True)
+
+# Prepare the training data
+X = DataforNN.iloc[:, 1:]
+Y = DataforNN.iloc[:, 0]
+X_Train, X_Test, Y_Train, Y_Test = train_test_split(X, Y, test_size=0.3, random_state=1)
+
+# Train an MLP classifier
+model = MLPClassifier(
+    max_iter=5000, hidden_layer_sizes=(5, 5, 5),
+    verbose=True, tol=0.000001, n_iter_no_change=50
+)
+model.fit(X_Train, Y_Train)
+predictions = model.predict(X_Test)
+ActualValues = pd.DataFrame(Y_Test)
+ActualValues.reset_index(drop=True, inplace=True)
+PredictedValues = pd.DataFrame(predictions)
+ComparedValues = pd.concat([ActualValues, PredictedValues], ignore_index=True, axis=1)
+
+RightSignals = 0
+LowValues = 0
+WrongSignals = 0
+MissedSignals = 0
+TotalSignals = 0
+
+# Analyze trading signals and calculate winrate
+for i in range(ComparedValues.shape[0]):
+    if ComparedValues.iloc[i, 0] == 1:
+        LowValues += 1
+    if ComparedValues.iloc[i, 1] == 1:
+        TotalSignals += 1
+    if ComparedValues.iloc[i, 1] == 1 and ComparedValues.iloc[i, 0] == 1:
+        RightSignals += 1
+    if (ComparedValues.iloc[i, 1] == 1) and ComparedValues.iloc[i, 0] == 0:
+        WrongSignals += 1
+    if (ComparedValues.iloc[i, 1] == 0) and ComparedValues.iloc[i, 0] == 1:
+        MissedSignals += 1
+
+Winrate = (RightSignals / TotalSignals) * 100
+
+# Print results
+print(
+    model.score(X_Test, Y_Test),
+    'LowValues = ', LowValues,
+    'RightHighPredictions = ', RightSignals,
+    'WrongSignals =', WrongSignals,
+    'MissedSignals =', MissedSignals,
+    'TotalSignals = ', TotalSignals,
+    'Winrate = ', Winrate
+)
+
+# Save the trained model
+import joblib
+joblib.dump(model, 'MLPClassifier - EURUSD - NextMinLow.joblib')
