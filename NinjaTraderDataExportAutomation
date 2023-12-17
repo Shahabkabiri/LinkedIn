@@ -1,0 +1,107 @@
+# File Description: 
+# This script automates the download and export of historical data from NinjaTrader. 
+# It then reads the output data and extracts levels from the raw data.
+
+import os
+import shutil
+import pyautogui
+from datetime import timedelta, datetime
+import time
+import pandas as pd
+import winshell
+
+# Disable pyautogui's failsafe feature
+pyautogui.FAILSAFE = False
+
+SleepingTime3 = 3
+
+# Function to display a countdown with UTC time
+def UTCTimeCounter(sleeptimeinseconds):
+    import time
+    for i in range(sleeptimeinseconds):
+        print('Resuming in ', sleeptimeinseconds - i, 'seconds .... UTC Time: ', datetime.utcnow(), end='\r')
+        time.sleep(1)
+
+# Function to start the script and check user readiness
+def StartNotes():
+    print('Running Strategy Method 1 - Part 1 - NinjaTrader Automated Download .... ', 'UTC Time:', datetime.utcnow())
+    print('Make sure you have selected the proper instrument list in NinjaTrader Export Window ....')
+    print('Make sure the NinjaTrader Export window is open and on the TOP ..... ')
+    Respond = input('Are you ready to start the procedure? (Y/N) ')
+    if str(Respond) == 'N' or str(Respond) == 'n':
+        print('You are not ready. Exiting the script.')
+        quit()
+
+# Function to delete existing NinjaTrader tick data folders
+def DeleteExistingTickDataNCDFolders(NinjaNCDTickFolderPath):
+    ExistingDataFolders = os.listdir(NinjaNCDTickFolderPath)
+    if len(ExistingDataFolders) > 0:
+        for i in range(len(ExistingDataFolders)):
+            Folderpath = os.path.join(NinjaNCDTickFolderPath, ExistingDataFolders[i])
+            shutil.rmtree(Folderpath)
+
+# Function to download and export data from NinjaTrader
+def DownloadAndExport(TotalNumberOfInstrumentsInNinjaDownloadList, ExportFolderPath):
+    # Download Data
+    pyautogui.leftClick(DownloadButton_X, DownloadButton_Y)
+    NewDownloadedNCDDataFolders = os.listdir(NinjaNCDTickFolderPath)
+    
+    while len(NewDownloadedNCDDataFolders) != TotalNumberOfInstrumentsInNinjaDownloadList:
+        print('Waiting for download to complete', datetime.utcnow(), end='\r')
+        NewDownloadedNCDDataFolders = os.listdir(NinjaNCDTickFolderPath)
+        time.sleep(1)
+    
+    time.sleep(5)
+    print("Download Completed...")
+    
+    # Export Each instrument
+    for i in range(TotalNumberOfInstrumentsInNinjaDownloadList):
+        pyautogui.click(Export_InstrumentBox_X, Export_InstrumentBox_Y)
+        time.sleep(SleepingTime3)
+        pyautogui.click(Export_InstrumentBox_X, Export_InstrumentBox_Y + (i + 1) * InstrumentExportListObjectHeight)
+        time.sleep(SleepingTime3)
+        
+        pyautogui.click(ExportButton_X, ExportButton_Y)
+        time.sleep(5)
+        pyautogui.click(SaveButton_X, SaveButton_Y)
+        time.sleep(5)
+        pyautogui.click(ReplaceButton_X, ReplaceButton_Y)
+        
+        # wait until the final file is created
+        InstrumentExportedFilePath = os.path.join(ExportFolderPath, str(NewDownloadedNCDDataFolders[i]) + '.Last.txt')
+        while True:
+            time.sleep(2)
+            oldsize = os.path.getsize(InstrumentExportedFilePath)
+            time.sleep(2)
+            newsize = os.path.getsize(InstrumentExportedFilePath)
+            if oldsize == newsize:
+                break
+            print('Waiting for Export to complete ... ', end='\r')
+        
+        time.sleep(5)
+        pyautogui.click(FinalOKButton_X, FinalOKButton_Y)
+
+# Function to check if it's within futures market working hours
+def FuturesMarketDataDownloadAllowance(FuturesMarketWorkingHoursForDataGatheringFilePath):
+    FuturesMarketWorkingHoursForDataGathering = pd.read_excel(FuturesMarketWorkingHoursForDataGatheringFilePath, sheet_name='Futures_DataGathering')
+    FuturesMarketWorkingHoursForDataGathering['Start_Time'] = pd.to_datetime(FuturesMarketWorkingHoursForDataGathering['Start_Time'], format="%d/%m/%Y %H:%M:%S")
+    FuturesMarketWorkingHoursForDataGathering['End_Time'] = pd.to_datetime(FuturesMarketWorkingHoursForDataGathering['End_Time'], format="%d/%m/%Y %H:%M:%S")
+    
+    for i in range(FuturesMarketWorkingHoursForDataGathering.shape[0]):
+        if FuturesMarketWorkingHoursForDataGathering.loc[i, 'Start_Time'] < datetime.utcnow() < FuturesMarketWorkingHoursForDataGathering.loc[i, 'End_Time']:
+            return True
+    
+    print('Futures Market seems to be closed based on your Calendar Data ... Pausing procedure for 1 Minute ...UTC Now:', datetime.utcnow(), end='\r')
+    time.sleep(60)
+    return False
+
+# Main Program
+StartNotes()
+TotalNumberOfInstrumentsInNinjaDownloadList = int(input('Now, give me the total number of instruments in your NinjaTrader customized download list...:'))
+
+while True:
+    while FuturesMarketDataDownloadAllowance(FuturesMarketWorkingHoursForDataGatheringFilePath):
+        # Part1
+        DeleteExistingTickDataNCDFolders(NinjaNCDTickFolderPath)
+        DownloadAndExport(TotalNumberOfInstrumentsInNinjaDownloadList, NinjaExportFolderPath)
+        UTCTimeCounter(int(pd.read_csv(BaseDataFilePath, header=None, index_col=0, squeeze=True).to_dict()['DownloadProcessSleepingInterval'])) # consecutive sleep between download processes
